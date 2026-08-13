@@ -67,8 +67,9 @@ either installation method.
 
 ### Add a comment
 
-Call `add_comment()` on a line or visual line selection. Redpen opens an
-editable prompt containing the generated location:
+Call `add_comment()` from either a source file or a Redpen diff buffer. It works
+on the current line or an active visual line selection. Redpen opens an editable
+prompt containing the generated source location:
 
 ```text
 lua/redpen/diff.lua:581
@@ -79,7 +80,8 @@ Add your comment after the location and press Enter. Redpen stores the comment
 in the current review so you can continue reading the diff and adding more.
 
 Visual mode is inferred automatically from Neovim's current mode; no option is
-required.
+required. In a Redpen diff buffer, the location comes from the same source-row
+mapping used by `jump_to_source()`.
 
 ### Finish the review
 

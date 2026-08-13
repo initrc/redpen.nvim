@@ -421,6 +421,26 @@ local function resolve_row_target(diff_row)
   return selected_target
 end
 
+-- Resolve one diff row or a visual range to its source path and lines.
+function M.source_range(start_row, end_row)
+  local start_target = resolve_row_target(start_row)
+  if not start_target then return nil, 'No changed file at the selection' end
+
+  local start_line = start_target.line or 1
+  end_row = end_row or start_row
+  if end_row == start_row then
+    return { path = start_target.path, start_line = start_line, end_line = start_line }
+  end
+
+  local end_target = resolve_row_target(end_row)
+  if not end_target then return nil, 'No changed file at the selection' end
+  if end_target.path ~= start_target.path then return nil, 'The selection spans multiple changed files' end
+
+  local end_line = end_target.line or 1
+  if start_line > end_line then start_line, end_line = end_line, start_line end
+  return { path = start_target.path, start_line = start_line, end_line = end_line }
+end
+
 function M.jump_to_source()
   -- Window ID 0 means the current window. The result is a Lua list such as
   -- `{ 12, 4 }`: `[1]` reads row 12 and `[2]` reads byte column 4. `[0]` is nil.
