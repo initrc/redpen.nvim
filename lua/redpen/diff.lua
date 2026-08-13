@@ -14,6 +14,18 @@ local HIGHLIGHT_GROUPS = {
   text = 'RedpenDiffText',
 }
 
+---@enum DiffMode
+local DIFF_MODE = {
+  WORKING_TREE = 'working_tree',
+  HEAD_COMMIT = 'head_commit',
+}
+
+---@param diff_mode DiffMode
+local function difft_title(diff_mode)
+  if diff_mode == DIFF_MODE.HEAD_COMMIT then return 'Difftastic: HEAD' end
+  return 'Difftastic: HEAD → working tree'
+end
+
 local state = {
   -- Incrementing this makes callbacks from a closed diff harmless.
   run_id = 0,
@@ -22,8 +34,9 @@ local state = {
   buffer_before_diff = nil,
   source_window_options = nil,
   repo_root = nil,
+  diff_mode = nil,
   -- Maps a diff row to its source. Headers omit `line`; `kind` keeps the
-  -- Git-status and Difftastic sections from matching each other.
+  -- Summary and Difftastic sections from matching each other.
   row_targets = {},
   running_jobs = {},
 }
@@ -246,49 +259,74 @@ local function parse_difft_output(raw_output, output_width)
   return clean_lines, highlight_ranges, row_targets, section_header_rows
 end
 
-local function git_status_highlight(status_code)
-  -- `[RC]` matches either R or C in Git's two-character status code.
-  if status_code:find 'D' then return HIGHLIGHT_GROUPS.red end
-  if status_code:find 'A' or status_code == '??' then return HIGHLIGHT_GROUPS.green end
-  if status_code:find '[RC]' then return HIGHLIGHT_GROUPS.blue end
-  return HIGHLIGHT_GROUPS.yellow
-end
-
--- Porcelain v1 is a stable, machine-readable format. V2 adds metadata we do
--- not use; regular `git status` is intended for people and can be configured.
-local function parse_git_status(raw_output)
-  -- Git's `-z` output is NUL-separated: `"a\0b\0"` becomes `{ "a", "b" }`.
-  local status_entries = vim.split(raw_output, '\0', { plain = true, trimempty = true })
-  local status_lines, row_targets, highlight_ranges = { 'Git status' }, {}, {}
+---@param raw_output string
+---@param diff_mode DiffMode
+local function parse_diff_summary(raw_output, diff_mode)
+  -- `--numstat -z` keeps paths unquoted and NUL-separated so even unusual
+  -- filenames can be mapped back to their source files without ambiguity.
+  local entries = vim.split(raw_output, '\0', { plain = true, trimempty = false })
+  local summary_lines, row_targets, highlight_ranges = { 'Summary' }, {}, {}
   local entry_index = 1
+  if diff_mode == DIFF_MODE.HEAD_COMMIT then
+    local commit_hash, commit_subject = entries[1] or '', entries[2] or ''
+    if commit_hash ~= '' then table.insert(summary_lines, '  ' .. commit_hash .. ' ' .. commit_subject) end
+    entry_index = 3
+  end
 
-  while entry_index <= #status_entries do
-    local status_entry = status_entries[entry_index]
-    -- `" M lua/user.lua"` gives status `" M"` and path `"lua/user.lua"`.
-    local status_code, current_path = status_entry:sub(1, 2), status_entry:sub(4)
-    local displayed_path = current_path
-    if status_code:find '[RC]' then
-      -- With `-z`, Git emits `"R  new.lua\0old.lua\0"`. The current entry
-      -- contains the new path; incrementing consumes the following old path.
-      entry_index = entry_index + 1
-      local original_path = status_entries[entry_index] or '?'
-      displayed_path = original_path .. ' → ' .. current_path
+  local file_count, insertion_count, deletion_count = 0, 0, 0
+  while entry_index <= #entries do
+    -- `git show` puts a newline between its formatted header and numstat data.
+    local entry = entries[entry_index]:gsub('^\n', '')
+    local added, deleted, current_path = entry:match '^([^\t]+)\t([^\t]+)\t(.*)$'
+    if added then
+      local displayed_path = current_path
+      if current_path == '' then
+        local original_path = entries[entry_index + 1] or '?'
+        current_path = entries[entry_index + 2] or '?'
+        displayed_path = original_path .. ' → ' .. current_path
+        entry_index = entry_index + 2
+      end
+
+      displayed_path = displayed_path:gsub('\n', '\\n')
+      local summary_row = #summary_lines + 1
+      if added == '-' or deleted == '-' then
+        summary_lines[summary_row] = '  binary ' .. displayed_path
+      else
+        summary_lines[summary_row] = string.format('  +%s -%s %s', added, deleted, displayed_path)
+        local deletion_col = 5 + #added
+        highlight_ranges[summary_row] = {
+          { col = 2, end_col = 3 + #added, group = HIGHLIGHT_GROUPS.green },
+          { col = deletion_col, end_col = deletion_col + 1 + #deleted, group = HIGHLIGHT_GROUPS.red },
+        }
+        insertion_count = insertion_count + tonumber(added)
+        deletion_count = deletion_count + tonumber(deleted)
+      end
+      row_targets[summary_row] = { path = current_path, line = 1, kind = 'summary' }
+      file_count = file_count + 1
     end
-
-    local status_row = #status_lines + 1
-    -- Filename `a[LINE BREAK]b.lua` is displayed as `a\nb.lua` on one row.
-    displayed_path = displayed_path:gsub('\n', '\\n')
-    -- Status `" M"` and path `"lua/user.lua"` become `"   M  lua/user.lua"`.
-    status_lines[status_row] = string.format('  %-2s  %s', status_code, displayed_path)
-    row_targets[status_row] = { path = current_path, line = 1, kind = 'status' }
-    -- Git status is always two characters: X for the index and Y for the
-    -- working tree. In `"   M  file"`, zero-based range [2, 4) covers `" M"`.
-    highlight_ranges[status_row] = { { col = 2, end_col = 4, group = git_status_highlight(status_code) } }
     entry_index = entry_index + 1
   end
 
-  if #status_lines == 1 then table.insert(status_lines, '  Clean working tree') end
-  return status_lines, row_targets, highlight_ranges
+  if file_count == 0 then
+    table.insert(summary_lines, '  No tracked changes')
+  else
+    local file_label = file_count == 1 and 'file' or 'files'
+    local insertion_label = insertion_count == 1 and 'insertion' or 'insertions'
+    local deletion_label = deletion_count == 1 and 'deletion' or 'deletions'
+    table.insert(
+      summary_lines,
+      string.format(
+        '  %d %s changed, %d %s(+), %d %s(-)',
+        file_count,
+        file_label,
+        insertion_count,
+        insertion_label,
+        deletion_count,
+        deletion_label
+      )
+    )
+  end
+  return summary_lines, row_targets, highlight_ranges
 end
 
 local function add_diff_highlight(diff_row, highlight_range)
@@ -304,7 +342,8 @@ local function add_diff_highlight(diff_row, highlight_range)
   })
 end
 
-local function render_diff(status_result, difft_result, run_id, output_width)
+---@param diff_mode DiffMode
+local function render_diff(summary_result, difft_result, run_id, output_width, diff_mode)
   local diff_buffer, diff_window = state.diff_buf, state.diff_win
   if
     run_id ~= state.run_id
@@ -317,19 +356,19 @@ local function render_diff(status_result, difft_result, run_id, output_width)
   end
   state.running_jobs = {}
 
-  local status_lines, status_row_targets, status_highlight_ranges
-  if status_result.code == 0 then
-    status_lines, status_row_targets, status_highlight_ranges = parse_git_status(status_result.stdout or '')
+  local summary_lines, summary_row_targets, summary_highlight_ranges
+  if summary_result.code == 0 then
+    summary_lines, summary_row_targets, summary_highlight_ranges =
+      parse_diff_summary(summary_result.stdout or '', diff_mode)
   else
-    status_lines = { 'Git status', '  ' .. vim.trim(status_result.stderr or 'Failed to run git status') }
-    status_row_targets, status_highlight_ranges = {}, {}
+    summary_lines = { 'Summary', '  ' .. vim.trim(summary_result.stderr or 'Failed to load summary') }
+    summary_row_targets, summary_highlight_ranges = {}, {}
   end
 
-  -- Copy `status_lines` before appending the Difftastic section.
-  local diff_lines = vim.list_extend({}, status_lines)
+  local diff_lines = vim.list_extend({}, summary_lines)
   table.insert(diff_lines, '')
   local difft_title_row = #diff_lines + 1
-  table.insert(diff_lines, 'Difftastic: HEAD → working tree')
+  table.insert(diff_lines, difft_title(diff_mode))
   -- Difftastic row 1 appears at `1 + difft_row_offset` in the diff buffer.
   local difft_row_offset = #diff_lines
 
@@ -345,8 +384,8 @@ local function render_diff(status_result, difft_result, run_id, output_width)
   end
 
   state.row_targets = {}
-  for status_row, row_target in pairs(status_row_targets) do
-    state.row_targets[status_row] = row_target
+  for summary_row, row_target in pairs(summary_row_targets) do
+    state.row_targets[summary_row] = row_target
   end
   for difft_row, row_target in pairs(difft_row_targets) do
     state.row_targets[difft_row + difft_row_offset] = row_target
@@ -362,12 +401,12 @@ local function render_diff(status_result, difft_result, run_id, output_width)
     end_col = #diff_lines[difft_title_row],
     group = HIGHLIGHT_GROUPS.title,
   })
-  -- Status highlights are keyed by diff row and start at row 2, so the table
+  -- Summary highlights are keyed by diff row and start at row 2, so the table
   -- is sparse and needs `pairs`. The remaining tables are dense lists, so they
   -- use `ipairs` to visit numeric entries in order.
-  for status_row, row_highlights in pairs(status_highlight_ranges) do
+  for summary_row, row_highlights in pairs(summary_highlight_ranges) do
     for _, highlight_range in ipairs(row_highlights) do
-      add_diff_highlight(status_row, highlight_range)
+      add_diff_highlight(summary_row, highlight_range)
     end
   end
   for difft_row, row_highlights in ipairs(difft_highlight_ranges) do
@@ -481,6 +520,7 @@ local function reset_diff_state()
   state.buffer_before_diff = nil
   state.source_window_options = nil
   state.repo_root = nil
+  state.diff_mode = nil
   state.row_targets = {}
   state.running_jobs = {}
 end
@@ -524,33 +564,39 @@ local function run_async(command, command_options, run_id, on_exit)
   table.insert(state.running_jobs, job)
 end
 
-local function load_diff(run_id, output_width)
-  local status_result, difft_result
+---@param diff_mode DiffMode
+local function load_diff(run_id, output_width, diff_mode)
+  local summary_result, difft_result
   local function render_when_ready()
-    if not status_result or not difft_result then return end
+    if not summary_result or not difft_result then return end
     -- The process exit handler is a libuv callback; schedule buffer changes
     -- onto Neovim's main loop after both commands have completed.
-    vim.schedule(function() render_diff(status_result, difft_result, run_id, output_width) end)
+    vim.schedule(function() render_diff(summary_result, difft_result, run_id, output_width, diff_mode) end)
   end
 
-  -- Porcelain v1 is stable for scripts; `-z` makes records NUL-separated and
-  -- `--untracked-files=all` lists files inside untracked directories separately.
-  run_async({ 'git', 'status', '--porcelain=v1', '-z', '--untracked-files=all' }, nil, run_id, function(result)
-    status_result = result
+  local summary_command = { 'git', 'diff', '--numstat', '-z', 'HEAD', '--' }
+  if diff_mode == DIFF_MODE.HEAD_COMMIT then
+    summary_command = { 'git', 'show', '--numstat', '-z', '--format=%h%x00%s%x00', 'HEAD', '--' }
+  end
+  run_async(summary_command, nil, run_id, function(result)
+    summary_result = result
     render_when_ready()
   end)
 
-  -- A repository without HEAD has no tracked baseline to diff against.
-  run_async({ 'git', 'rev-parse', '--verify', '--quiet', 'HEAD' }, nil, run_id, function(head_result)
-    if head_result.code ~= 0 then
+  -- A repository without HEAD has no commit to compare or show.
+  run_async({ 'git', 'rev-parse', '--verify', '--quiet', 'HEAD' }, nil, run_id, function(commit_result)
+    if commit_result.code ~= 0 then
       difft_result = { code = 0, stdout = '', stderr = '' }
       render_when_ready()
       return
     end
 
-    -- Compare HEAD with the working tree, including staged and unstaged tracked changes.
+    local command = { 'git', '-c', 'diff.external=difft', 'diff', 'HEAD', '--' }
+    if diff_mode == DIFF_MODE.HEAD_COMMIT then
+      command = { 'git', '-c', 'diff.external=difft', 'show', '--ext-diff', '--format=', 'HEAD', '--' }
+    end
     run_async(
-      { 'git', '-c', 'diff.external=difft', 'diff', 'HEAD', '--' },
+      command,
       {
         -- Always emit colors for translation into Neovim highlights. A fixed
         -- side-by-side layout lets the parser locate the new-file line numbers.
@@ -598,7 +644,18 @@ local function remember_window_before_diff()
   return diff_window, buffer_before_diff
 end
 
-function M.open()
+---@param diff_mode DiffMode
+local function show_loading_diff(diff_mode)
+  state.diff_mode = diff_mode
+  apply_diff_window_options()
+  reset_diff_buffer_lines { 'Summary', '  Loading…', '', difft_title(diff_mode), '  Loading…' }
+  -- Keep enough width for two readable sides even when the current window is narrow.
+  local output_width = math.max(80, vim.api.nvim_win_get_width(state.diff_win))
+  load_diff(state.run_id, output_width, diff_mode)
+end
+
+---@param diff_mode DiffMode
+local function open(diff_mode)
   local existing_diff_buffer = state.diff_buf
   if existing_diff_buffer and vim.api.nvim_buf_is_valid(existing_diff_buffer) then
     -- The diff may already be visible in another split or tab. Focus that
@@ -607,15 +664,21 @@ function M.open()
     if #visible_diff_windows > 0 then
       state.diff_win = visible_diff_windows[1]
       vim.api.nvim_set_current_win(state.diff_win)
-      apply_diff_window_options()
-      return
+    else
+      -- If source navigation hid the diff, reopen it here and remember the
+      -- current buffer so `close()` restores that buffer in this window.
+      local diff_window = remember_window_before_diff()
+      vim.api.nvim_win_set_buf(diff_window, existing_diff_buffer)
     end
 
-    -- If source navigation hid the diff, reopen it here and remember the
-    -- current buffer so `close()` restores that buffer in this window.
-    local diff_window = remember_window_before_diff()
-    vim.api.nvim_win_set_buf(diff_window, existing_diff_buffer)
-    apply_diff_window_options()
+    if state.diff_mode ~= diff_mode then
+      state.run_id = state.run_id + 1
+      stop_running_jobs()
+      state.running_jobs = {}
+      show_loading_diff(diff_mode)
+    else
+      apply_diff_window_options()
+    end
     return
   end
 
@@ -649,9 +712,6 @@ function M.open()
     state.buffer_before_diff = nil
   end
 
-  apply_diff_window_options()
-  local loading_diff_lines = { 'Git status', '  Loading…', '', 'Difftastic: HEAD → working tree', '  Loading…' }
-  reset_diff_buffer_lines(loading_diff_lines)
   -- The filetype lets users add their own buffer-local diff mappings.
   vim.bo[diff_buffer].filetype = 'redpen-diff'
   -- `<C-o>` can return from a source file; restore the diff-only window options.
@@ -676,9 +736,11 @@ function M.open()
     end,
   })
 
-  -- Keep enough width for two readable sides even when the current window is narrow.
-  local output_width = math.max(80, vim.api.nvim_win_get_width(diff_window))
-  load_diff(state.run_id, output_width)
+  show_loading_diff(diff_mode)
 end
+
+function M.open() return open(DIFF_MODE.WORKING_TREE) end
+
+function M.open_head() return open(DIFF_MODE.HEAD_COMMIT) end
 
 return M

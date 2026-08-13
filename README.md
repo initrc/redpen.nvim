@@ -30,6 +30,7 @@ local redpen = require 'redpen'
 -- `x` maps Visual mode only; unlike `v`, it does not include Select mode.
 vim.keymap.set({ 'n', 'x' }, '<leader>ra', redpen.add_comment, { desc = '[R]edpen [A]dd comment' })
 vim.keymap.set('n', '<leader>rd', redpen.open_diff, { desc = '[R]edpen [D]iff' })
+vim.keymap.set('n', '<leader>rD', redpen.open_diff_head, { desc = '[R]edpen HEAD [D]iff' })
 vim.keymap.set('n', '<leader>rf', redpen.finish_review, { desc = '[R]edpen [F]inish review' })
 
 -- These mappings exist only in a Redpen diff buffer.
@@ -95,19 +96,20 @@ displays a notification.
 
 ### Read the diff
 
-`open_diff()` finds the Git repository containing the current buffer and
-replaces the current window with a scratch diff buffer. It displays:
-
-1. Git porcelain status, including untracked files.
-2. A colorized, side-by-side Difftastic comparison from `HEAD` to the working
-   tree, including staged and unstaged tracked changes.
+`open_diff()` and `open_diff_head()` find the Git repository containing the
+current buffer and replace the current window with a scratch diff buffer.
+Both display a summary with per-file change counts followed by a colorized,
+side-by-side Difftastic comparison. The HEAD summary also includes the commit's
+abbreviated hash and subject. `open_diff()` compares `HEAD` to the working tree;
+`open_diff_head()` shows the changes introduced by `HEAD`. Summary file rows can
+be opened with `jump_to_source()` just like Difftastic rows.
 
 Move to a file header or diff row and call `jump_to_source()` to open the file
 at the nearest corresponding new-file line. Use Neovim's normal jump history
 (for example, `<C-o>`) to return to the diff. Call `close_diff()` to delete the
 diff buffer and restore the buffer that was visible before it opened.
 
-Calling `open_diff()` while a diff already exists focuses or redisplays that
+Calling either function while a diff already exists focuses or redisplays that
 diff instead of starting a second one.
 
 ## API
@@ -117,6 +119,7 @@ diff instead of starting a second one.
 | `require('redpen').add_comment()` | Prompt for and collect a comment about the current line or active visual line range. |
 | `require('redpen').finish_review()` | Copy all collected comments to the clipboard and clear the review. |
 | `require('redpen').open_diff()` | Open or focus the repository diff. |
+| `require('redpen').open_diff_head()` | Open or focus the HEAD commit diff. |
 | `require('redpen').jump_to_source()` | Open the source location represented by the current diff row. |
 | `require('redpen').close_diff()` | Close the active diff and restore its previous buffer. |
 

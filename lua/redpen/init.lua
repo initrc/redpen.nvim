@@ -14,6 +14,9 @@ function M.finish_review() return comment.finish() end
 ---Open the diff for the Git repository containing the current buffer.
 function M.open_diff() return diff.open() end
 
+---Open the HEAD commit diff for the Git repository containing the current buffer.
+function M.open_diff_head() return diff.open_head() end
+
 ---Close the active diff and restore its previous buffer.
 function M.close_diff() return diff.close() end
 
