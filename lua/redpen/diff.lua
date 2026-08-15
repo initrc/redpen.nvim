@@ -260,8 +260,9 @@ local function parse_difft_output(raw_output, output_width)
 end
 
 ---@param raw_output string
+---@param untracked_output string
 ---@param diff_mode DiffMode
-local function parse_diff_summary(raw_output, diff_mode)
+local function parse_diff_summary(raw_output, untracked_output, diff_mode)
   -- `--numstat -z` keeps paths unquoted and NUL-separated so even unusual
   -- filenames can be mapped back to their source files without ambiguity.
   local entries = vim.split(raw_output, '\0', { plain = true, trimempty = false })
@@ -307,24 +308,41 @@ local function parse_diff_summary(raw_output, diff_mode)
     entry_index = entry_index + 1
   end
 
-  if file_count == 0 then
+  local untracked_count = 0
+  for _, current_path in ipairs(vim.split(untracked_output, '\0', { plain = true, trimempty = true })) do
+    local summary_row = #summary_lines + 1
+    summary_lines[summary_row] = '  untracked ' .. current_path:gsub('\n', '\\n')
+    row_targets[summary_row] = { path = current_path, line = 1, kind = 'summary' }
+    highlight_ranges[summary_row] = { { col = 2, end_col = 11, group = HIGHLIGHT_GROUPS.green } }
+    untracked_count = untracked_count + 1
+  end
+
+  if file_count == 0 and untracked_count == 0 then
     table.insert(summary_lines, '  No tracked changes')
   else
-    local file_label = file_count == 1 and 'file' or 'files'
-    local insertion_label = insertion_count == 1 and 'insertion' or 'insertions'
-    local deletion_label = deletion_count == 1 and 'deletion' or 'deletions'
-    table.insert(
-      summary_lines,
-      string.format(
-        '  %d %s changed, %d %s(+), %d %s(-)',
-        file_count,
-        file_label,
-        insertion_count,
-        insertion_label,
-        deletion_count,
-        deletion_label
+    local totals = {}
+    if file_count > 0 then
+      local file_label = file_count == 1 and 'file' or 'files'
+      local insertion_label = insertion_count == 1 and 'insertion' or 'insertions'
+      local deletion_label = deletion_count == 1 and 'deletion' or 'deletions'
+      table.insert(
+        totals,
+        string.format(
+          '%d %s changed, %d %s(+), %d %s(-)',
+          file_count,
+          file_label,
+          insertion_count,
+          insertion_label,
+          deletion_count,
+          deletion_label
+        )
       )
-    )
+    end
+    if untracked_count > 0 then
+      local untracked_label = untracked_count == 1 and 'file' or 'files'
+      table.insert(totals, string.format('%d untracked %s', untracked_count, untracked_label))
+    end
+    table.insert(summary_lines, '  ' .. table.concat(totals, ', '))
   end
   return summary_lines, row_targets, highlight_ranges
 end
@@ -343,7 +361,7 @@ local function add_diff_highlight(diff_row, highlight_range)
 end
 
 ---@param diff_mode DiffMode
-local function render_diff(summary_result, difft_result, run_id, output_width, diff_mode)
+local function render_diff(summary_result, untracked_result, difft_result, run_id, output_width, diff_mode)
   local diff_buffer, diff_window = state.diff_buf, state.diff_win
   if
     run_id ~= state.run_id
@@ -357,11 +375,12 @@ local function render_diff(summary_result, difft_result, run_id, output_width, d
   state.running_jobs = {}
 
   local summary_lines, summary_row_targets, summary_highlight_ranges
-  if summary_result.code == 0 then
+  if summary_result.code == 0 and untracked_result.code == 0 then
     summary_lines, summary_row_targets, summary_highlight_ranges =
-      parse_diff_summary(summary_result.stdout or '', diff_mode)
+      parse_diff_summary(summary_result.stdout or '', untracked_result.stdout or '', diff_mode)
   else
-    summary_lines = { 'Summary', '  ' .. vim.trim(summary_result.stderr or 'Failed to load summary') }
+    local failed_result = summary_result.code ~= 0 and summary_result or untracked_result
+    summary_lines = { 'Summary', '  ' .. vim.trim(failed_result.stderr or 'Failed to load summary') }
     summary_row_targets, summary_highlight_ranges = {}, {}
   end
 
@@ -566,12 +585,14 @@ end
 
 ---@param diff_mode DiffMode
 local function load_diff(run_id, output_width, diff_mode)
-  local summary_result, difft_result
+  local summary_result, untracked_result, difft_result
   local function render_when_ready()
-    if not summary_result or not difft_result then return end
-    -- The process exit handler is a libuv callback; schedule buffer changes
-    -- onto Neovim's main loop after both commands have completed.
-    vim.schedule(function() render_diff(summary_result, difft_result, run_id, output_width, diff_mode) end)
+    if not summary_result or not untracked_result or not difft_result then return end
+    -- The process exit handlers are libuv callbacks; schedule buffer changes
+    -- onto Neovim's main loop after all commands have completed.
+    vim.schedule(
+      function() render_diff(summary_result, untracked_result, difft_result, run_id, output_width, diff_mode) end
+    )
   end
 
   local summary_command = { 'git', 'diff', '--numstat', '-z', 'HEAD', '--' }
@@ -582,6 +603,15 @@ local function load_diff(run_id, output_width, diff_mode)
     summary_result = result
     render_when_ready()
   end)
+
+  if diff_mode == DIFF_MODE.WORKING_TREE then
+    run_async({ 'git', 'ls-files', '--others', '--exclude-standard', '-z' }, nil, run_id, function(result)
+      untracked_result = result
+      render_when_ready()
+    end)
+  else
+    untracked_result = { code = 0, stdout = '', stderr = '' }
+  end
 
   -- A repository without HEAD has no commit to compare or show.
   run_async({ 'git', 'rev-parse', '--verify', '--quiet', 'HEAD' }, nil, run_id, function(commit_result)

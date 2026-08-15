@@ -84,7 +84,8 @@ the changes introduced by `HEAD`. Both find the Git repository containing the
 current buffer and replace the current window with a scratch diff buffer. They
 display a summary with per-file change counts followed by a colorized,
 side-by-side Difftastic comparison. The HEAD summary also includes the commit's
-abbreviated hash and subject.
+abbreviated hash and subject. The working-tree summary also lists untracked
+files.
 
 Move to a summary file, file header, or diff row and press `<CR>` to open the
 file. To return to the diff, press `<leader>rd`/`<leader>rD` again or use
