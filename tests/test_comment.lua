@@ -8,6 +8,7 @@ local input_suffixes
 local notifications
 local written_register
 local written_review
+local CANCELLED_INPUT = {}
 
 vim.opt.runtimepath:prepend(plugin_root)
 
@@ -31,6 +32,7 @@ local function before()
     table.insert(input_calls, { prompt = prompt, default = default })
     local suffix = table.remove(input_suffixes, 1)
     assert(suffix, 'Test did not provide an input response')
+    if suffix == CANCELLED_INPUT then return '' end
     return default .. suffix
   end)
   rawset(vim.fn, 'setreg', function(register, value)
@@ -91,6 +93,18 @@ local function test_add_comment_uses_visual_line_range()
   wait_for_notifications(1)
 end
 
+local function test_cancelled_comment_is_not_added()
+  input_suffixes = { CANCELLED_INPUT }
+
+  local comment = require('redpen').add_comment()
+  local review = require('redpen').finish_review()
+
+  assert(comment == nil, 'Cancelling input returned a comment')
+  assert(review == nil, 'Cancelling input added a comment to the review')
+  assert(#notifications == 1, 'Cancelling input reported a review update')
+  assert(notifications[1] == 'No review comments to copy', 'Cancelled review used the wrong notification')
+end
+
 local function test_finish_review_copies_and_clears_comments()
   input_suffixes = { 'First comment', 'Second comment' }
   local redpen = require 'redpen'
@@ -119,6 +133,7 @@ local function run()
   local tests = {
     { 'single-line comment', test_add_comment_uses_current_file_and_line },
     { 'visual comment', test_add_comment_uses_visual_line_range },
+    { 'cancelled comment', test_cancelled_comment_is_not_added },
     { 'finish review', test_finish_review_copies_and_clears_comments },
   }
 

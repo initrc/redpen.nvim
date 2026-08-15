@@ -57,11 +57,10 @@ function M.add()
 
   -- Prefill the complete value so it can be checked or edited before adding.
   comment = vim.fn.input('Comment: ', comment .. ' '):gsub('%s+$', '')
-  table.insert(comments, comment)
+  if visual then vim.cmd.normal { vim.keycode '<Esc>', bang = true } end
+  if comment == '' then return end
 
-  if visual then
-    vim.cmd.normal { vim.keycode '<Esc>', bang = true }
-  end
+  table.insert(comments, comment)
 
   -- Wait until input() has released the command area before displaying the
   -- confirmation there. With cmdheight=0, it temporarily covers the last line.
