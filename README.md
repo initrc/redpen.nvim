@@ -16,7 +16,13 @@ Redpen addresses each of these problems inside Neovim:
 - It creates comments for a line or line range, then copies the complete,
   formatted review to the clipboard when you finish.
 
-![Redpen v1](https://github.com/initrc/redpen.nvim/blob/main/assets/redpen-v1.png)
+## Screenshots
+
+Diff against HEAD
+![Diff against HEAD](https://github.com/initrc/redpen.nvim/blob/main/assets/redpen-diff.png)
+
+HEAD commit
+![HEAD commit](https://github.com/initrc/redpen.nvim/blob/main/assets/redpen-head-commit.png)
 
 ## Requirements
 
