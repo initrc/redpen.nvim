@@ -59,6 +59,13 @@ local function find_row(lines, expected_line)
   error('Missing diff line: ' .. expected_line)
 end
 
+local function find_matching_row(lines, pattern)
+  for row, line in ipairs(lines) do
+    if line:match(pattern) then return row end
+  end
+  error('Missing diff line matching: ' .. pattern)
+end
+
 local function test_untracked_files_appear_in_summary()
   write_file('new.txt', { 'untracked' })
   write_file('second.txt', { 'also untracked' })
@@ -164,6 +171,58 @@ local function test_source_range_and_jump_use_summary_targets()
   assert(vim.api.nvim_win_get_cursor(0)[1] == 1, 'Jump opened the wrong source line')
 end
 
+local function test_multipart_diff_rows_keep_their_source_lines_at_wide_widths()
+  local original_lines = {}
+  for line_number = 1, 97 do
+    original_lines[line_number] = ('line %03d'):format(line_number)
+  end
+  original_lines[95] = 'runCli(process.argv.slice(2), process.cwd(), templatesDir)'
+  write_file('multipart.txt', original_lines)
+  git { 'add', 'multipart.txt' }
+  git { '-c', 'user.name=Redpen Test', '-c', 'user.email=redpen@example.com', 'commit', '--quiet', '-m', 'Add multipart fixture' }
+
+  local changed_lines = {}
+  for line_number, line in ipairs(original_lines) do
+    if line_number == 44 then
+      table.insert(changed_lines, 'changed line 044')
+    elseif line_number == 95 then
+      table.insert(changed_lines, 'await runCli(')
+      table.insert(changed_lines, '  process.argv.slice(2),')
+      table.insert(changed_lines, '  process.cwd(),')
+      table.insert(changed_lines, '  templatesDir,')
+      table.insert(changed_lines, '  doctor,')
+      table.insert(changed_lines, '  taskPicker,')
+      table.insert(changed_lines, ')')
+    else
+      table.insert(changed_lines, line)
+    end
+  end
+  write_file('multipart.txt', changed_lines)
+
+  -- At this width Difftastic's right-side three-digit line markers overlap the
+  -- nominal midpoint, and the asymmetric final hunk is shorter than the window.
+  local original_columns = vim.o.columns
+  vim.o.columns = 172
+  require('redpen').open_diff()
+
+  local lines = wait_for_diff()
+  vim.o.columns = original_columns
+  local second_part_header = find_matching_row(lines, '^multipart%.txt %-%-%- 2/2 %-%-%-')
+  local final_line_row = find_matching_row(lines, '%s103%s+line 097$')
+  local diff = require 'redpen.diff'
+  local header_range = assert(diff.source_range(second_part_header))
+  local final_line_range = assert(diff.source_range(final_line_row))
+
+  assert(
+    header_range.start_line == 92,
+    ('Multipart header used source line %d instead of 92'):format(header_range.start_line)
+  )
+  assert(
+    final_line_range.start_line == 103,
+    ('Wide multipart row used source line %d instead of 103'):format(final_line_range.start_line)
+  )
+end
+
 local function run()
   local tests = {
     { 'untracked summary', test_untracked_files_appear_in_summary },
@@ -171,6 +230,7 @@ local function run()
     { 'HEAD diff', test_head_diff_shows_commit_changes_only },
     { 'diff reuse and close', test_open_reuses_diff_and_close_restores_source },
     { 'source range and jump', test_source_range_and_jump_use_summary_targets },
+    { 'wide multipart source lines', test_multipart_diff_rows_keep_their_source_lines_at_wide_widths },
   }
 
   for _, test in ipairs(tests) do

@@ -36,7 +36,8 @@ local state = {
   repo_root = nil,
   diff_mode = nil,
   -- Maps a diff row to its source. Headers omit `line`; `kind` keeps the
-  -- Summary and Difftastic sections from matching each other.
+  -- Summary and Difftastic sections from matching each other, and `section_id`
+  -- keeps repeated Difftastic parts of one file separate.
   row_targets = {},
   running_jobs = {},
 }
@@ -178,18 +179,26 @@ local function parse_difft_path(display_path)
   return display_path:match '^.- => (.+)$' or display_path
 end
 
--- Difftastic separates its two sides with a string position containing spaces.
--- Positions here are Lua's one-based byte positions, not Neovim columns.
+local function is_difft_line_marker(marker)
+  if not marker then return false end
+  return marker:match('^[1-9]%d*$') ~= nil or marker:match('^%.+$') ~= nil
+end
+
+-- Difftastic separates its two sides with whitespace followed by the new-side
+-- line marker. Positions here are Lua's one-based byte positions, not columns.
 local function is_difft_gutter(clean_lines, first_row, last_row, gutter_position)
   if gutter_position < 1 then return false end
   local position_exists = false
   for difft_row = first_row, last_row do
     local clean_line = clean_lines[difft_row]
-    if clean_line and #clean_line >= gutter_position then
+    local old_line_marker = clean_line and clean_line:match '^%s*(%S+)%s'
+    if is_difft_line_marker(old_line_marker) then
       position_exists = true
-      -- In `"ab cd"`, `sub(3, 3)` returns the single character `" "`.
-      local gutter_character = clean_line:sub(gutter_position, gutter_position)
-      if gutter_character ~= ' ' then return false end
+      local new_side = clean_line:sub(gutter_position + 1)
+      local new_line_marker = new_side:match '^%s*(%S+)%s'
+      if clean_line:sub(gutter_position, gutter_position) ~= ' ' or not is_difft_line_marker(new_line_marker) then
+        return false
+      end
     end
   end
   return position_exists
@@ -198,17 +207,27 @@ end
 -- Find the whitespace column separating Difftastic's old and new sides.
 -- In `1 old     1 new`, the gutter is between `old` and the second `1`.
 local function find_difft_gutter(clean_lines, first_row, last_row, output_width)
-  -- Full-width output uses the requested midpoint as its gutter.
-  local gutter_position = math.floor(output_width / 2)
-  if is_difft_gutter(clean_lines, first_row, last_row, gutter_position) then return gutter_position end
-
   local widest_line = 0
   for difft_row = first_row, last_row do
     widest_line = math.max(widest_line, #(clean_lines[difft_row] or ''))
   end
-  -- Difftastic makes short output narrower, so its actual midpoint may differ.
-  gutter_position = math.floor(widest_line / 2)
-  if is_difft_gutter(clean_lines, first_row, last_row, gutter_position) then return gutter_position end
+
+  -- Full-width output normally uses the requested midpoint. Short or
+  -- asymmetric output can put the real gutter elsewhere, so choose the valid
+  -- marker boundary closest to that midpoint instead of guessing a second one.
+  local preferred_position = math.floor(output_width / 2)
+  local closest_position
+  local closest_distance
+  for gutter_position = 1, widest_line do
+    if is_difft_gutter(clean_lines, first_row, last_row, gutter_position) then
+      local distance = math.abs(gutter_position - preferred_position)
+      if not closest_distance or distance < closest_distance then
+        closest_position = gutter_position
+        closest_distance = distance
+      end
+    end
+  end
+  return closest_position
 end
 
 -- Parse Difftastic text into diff lines, colors, and source locations.
@@ -217,6 +236,7 @@ local function parse_difft_output(raw_output, output_width)
   local raw_lines = vim.split(raw_output, '\n', { plain = true, trimempty = true })
   local clean_lines, highlight_ranges, row_targets, section_header_rows = {}, {}, {}, {}
   local current_source_path
+  local current_section_id = 0
 
   for difft_row, raw_line in ipairs(raw_lines) do
     local clean_line, line_highlight_ranges = parse_ansi_line(raw_line)
@@ -227,9 +247,12 @@ local function parse_difft_output(raw_output, output_width)
     -- `" 14 ---"` and `" . ---"` are diff rows, not file headers.
     if difft_path and not clean_line:match '^%s*[%d%.]+%s' then
       current_source_path = parse_difft_path(vim.trim(difft_path))
+      current_section_id = current_section_id + 1
       table.insert(section_header_rows, difft_row)
     end
-    if current_source_path then row_targets[difft_row] = { path = current_source_path, kind = 'diff' } end
+    if current_source_path then
+      row_targets[difft_row] = { path = current_source_path, kind = 'diff', section_id = current_section_id }
+    end
   end
 
   for header_index, header_row in ipairs(section_header_rows) do
@@ -468,6 +491,7 @@ local function resolve_row_target(diff_row)
           candidate_target
           and candidate_target.path == selected_target.path
           and candidate_target.kind == selected_target.kind
+          and candidate_target.section_id == selected_target.section_id
           and candidate_target.line
         then
           return candidate_target
