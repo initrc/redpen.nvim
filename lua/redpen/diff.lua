@@ -725,14 +725,18 @@ local function open(diff_mode)
       vim.api.nvim_win_set_buf(diff_window, existing_diff_buffer)
     end
 
-    if state.diff_mode ~= diff_mode then
-      state.run_id = state.run_id + 1
-      stop_running_jobs()
-      state.running_jobs = {}
-      show_loading_diff(diff_mode)
-    else
-      apply_diff_window_options()
+    local repo_root = find_repo_root() or state.repo_root
+    if not repo_root then
+      vim.notify('Not a Git repository', vim.log.levels.ERROR)
+      return
     end
+
+    link_highlights_to_colorscheme()
+    state.repo_root = repo_root
+    state.run_id = state.run_id + 1
+    stop_running_jobs()
+    state.running_jobs = {}
+    show_loading_diff(diff_mode)
     return
   end
 

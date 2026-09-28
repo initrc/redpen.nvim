@@ -223,12 +223,36 @@ local function test_multipart_diff_rows_keep_their_source_lines_at_wide_widths()
   )
 end
 
+local function test_open_reloads_diff_when_source_changes()
+  write_file('tracked.txt', { 'first', 'second', 'third' })
+
+  local redpen = require 'redpen'
+  local diff = require 'redpen.diff'
+  redpen.open_diff()
+
+  local lines = wait_for_diff()
+  assert(vim.tbl_contains(lines, '  +1 -0 tracked.txt'), 'Summary did not include the initial change')
+  local initial_row = find_matching_row(lines, '%s3%s+third$')
+  local initial_range = assert(diff.source_range(initial_row))
+  assert(initial_range.start_line == 3, ('Initial change used line %d instead of 3'):format(initial_range.start_line))
+
+  write_file('tracked.txt', { 'first', 'inserted_a', 'inserted_b', 'second', 'third' })
+  redpen.open_diff()
+
+  local reloaded_lines = wait_for_diff()
+  assert(vim.tbl_contains(reloaded_lines, '  +3 -0 tracked.txt'), 'Summary did not reload the updated change')
+  local updated_row = find_matching_row(reloaded_lines, '%s5%s+third$')
+  local updated_range = assert(diff.source_range(updated_row))
+  assert(updated_range.start_line == 5, ('Reloaded change used line %d instead of 5'):format(updated_range.start_line))
+end
+
 local function run()
   local tests = {
     { 'untracked summary', test_untracked_files_appear_in_summary },
     { 'working-tree diff', test_working_tree_diff_shows_tracked_changes },
     { 'HEAD diff', test_head_diff_shows_commit_changes_only },
     { 'diff reuse and close', test_open_reuses_diff_and_close_restores_source },
+    { 'diff reload on source changes', test_open_reloads_diff_when_source_changes },
     { 'source range and jump', test_source_range_and_jump_use_summary_targets },
     { 'wide multipart source lines', test_multipart_diff_rows_keep_their_source_lines_at_wide_widths },
   }

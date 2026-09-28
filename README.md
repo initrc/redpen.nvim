@@ -78,6 +78,14 @@ vim.api.nvim_create_autocmd('FileType', {
 No `setup()` call is required. The mappings in the `vim.pack` example work with
 either installation method.
 
+## Update
+
+### vim.pack
+
+```
+:lua vim.pack.update({'redpen.nvim'})
+```
+
 ## Usage
 
 Keyboard shortcuts mentioned in this section are from the configuration above. If
